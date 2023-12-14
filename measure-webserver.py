@@ -1,49 +1,58 @@
-import socket
+from scapy.all import *
+from scapy.layers.http import HTTP, HTTPRequest, HTTPResponse
+from scapy.layers.inet import TCP, IP
 import sys
 
-def start_server(ip, port, accounts, session_timeout, root_dir):
-    ip = sys.argv[1]
-    port = int(sys.argv[2])
-    accounts = sys.argv[3]
-    session_timeout = int(sys.argv[4])
-    root_dir = sys.argv[5]
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((ip, port))
-    sock.listen()
-
-    while True:
-        conn, addr = sock.accept()
-        with conn:
-            request = conn.recv(1024).decode()
-            http_method = request.split(" ")[0]
-            request_target = request.split(" ")[1]
-            http_version = "HTTP/1.0"
-
-            if http_method == "POST" and request_target == "/":
-                status, headers, body = post(request, accounts)
-                message = http_version + " " + status + "\r\n" + headers + "\r\n\r\n" + body
-                conn.sendall(message.encode())
-            elif http_method == "GET":
-                status, body = get_request(request, session_timeout, root_dir, request_target)
-                if (len(body) == 0):
-                    message = f"{http_version} {status}\r\n\r\n"
-                else:
-                    message = f"{http_version} {status}\r\n\r\n{body}"
-                conn.sendall(message.encode())
-            else:
-                message = f"{http_version} 501 Not Implemented\r\n\r\n"
-                conn.sendall(message.encode())
-
-        conn.close()
-
 def main():
-    start_server(sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4]), sys.argv[5])
+    file = sys.argv[1]
+    ip = sys.argv[2]
+    port = int(sys.argv[3])
+    pcap = rdpcap(file)
+
+    sessions = pcap.sessions()
+    latencies = []
+    requests = {} # get requests, use this dictionary to match pairs
+    counter = 0
+    sum = 0.0
+    
+    for session in sessions:
+        for packet in sessions[session]:
+            if packet.haslayer(TCP):
+                source_ip = packet[IP].src
+                dest_ip = packet[IP].dst
+                source_port = packet[TCP].sport
+                dest_port = packet[TCP].dport
+                if packet.haslayer(HTTP):
+                    if HTTPRequest in packet:
+                        if dest_ip == ip and dest_port == port:
+                            arrival_time = packet.time
+                            request_key = (source_ip, source_port, dest_ip, dest_port)
+                            # print("request:", request_key)
+                            requests[request_key] = arrival_time
+                    if HTTPResponse in packet:
+                        if source_ip == ip and source_port == port:
+                            response_key = (dest_ip, dest_port, source_ip, source_port)
+                            # print("response: ", response_key)
+                            if response_key in requests:
+                                arrival = requests[response_key]
+                                departure = packet.time
+                                if departure > arrival:
+                                    latency = departure - arrival
+                                    latencies.append(latency)
+                                    sum += latency
+                                    counter += 1
+    
+    # counter starts at 0 so must add one
+    print(f"AVERAGE LATENCY: {round(sum/(counter+1), 5)}")
+    
+    sorted_list = sorted(latencies)
+    length = len(latencies)
+    twentyfive = int(.25 * length)
+    fifty = int(.50 * length)
+    seventyfive = int(.75 * length)
+    nintyfive = int(.95 * length)
+    ninetynine = int(.99 * length)
+
+    print(f"PERCENTILES: {round(sorted_list[twentyfive], 5)} {round(sorted_list[fifty], 5)} {round(sorted_list[seventyfive], 5)} {round(sorted_list[nintyfive], 5)} {round(sorted_list[ninetynine], 5)}")
 
 main()
-
-
-
-print("AVERAGE LATENCY: <float>")
-print("PERCENTILES: <float-25%> , <float-50%>, <float-75%>, <float-95%>, <float-99%>")
